@@ -14,6 +14,14 @@ const defaultManifest: ManifestV3Export = {
     service_worker: "src/background.ts",
 
   },
+  content_scripts: [
+    {
+      matches: ["https://*.slack.com/*"],
+      js: ["src/content_scripts/slack.ts"],
+      run_at: "document_idle",
+    },
+  ],
+
   action: {
     default_popup: "index.html",
   },

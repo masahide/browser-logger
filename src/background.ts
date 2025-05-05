@@ -1,31 +1,77 @@
+// slack/api.* だけを対象
 const SLACK_API = /https:\/\/[^/]+\.slack\.com\/api\/(reactions\.add|reactions\.remove|chat\.postMessage)/;
 
+
+/* ---------- 型 ---------- */
+interface BaseEntry { ts: string; channelId: string; channelName?: string }
+interface PostEntry extends BaseEntry { kind: 'post'; text: string }
+interface ReactionEntry extends BaseEntry { kind: 'reaction'; emoji: string; type: 'add' | 'remove'; user?: string; text?: string }
+
+
+/* ---------- util ---------- */
+function toParams(form: { [k: string]: string[] | undefined }) { const p = new URLSearchParams(); for (const [k, vs] of Object.entries(form)) vs?.forEach(v => p.append(k, v)); return p }
+function fromBlocks(json: string) { try { return JSON.parse(json).flatMap((b: any) => b.elements?.flatMap((e: any) => e.elements?.filter((x: any) => x.type === 'text').map((x: any) => x.text))).join('') } catch { return '' } }
+
+
+/** blocks フィールド(JSON) から素テキストを抽出（単純化版） */
+function extractTextFromBlocks(jsonStr: string): string {
+    try {
+        const blocks = JSON.parse(jsonStr) as any[];
+        return blocks.flatMap(b =>
+            b.elements?.flatMap((e: any) =>
+                e.elements?.filter((x: any) => x.type === 'text').map((x: any) => x.text)
+            )
+        ).join('');
+    } catch { return ''; }
+}
+
+// =============== main ===============
 chrome.webRequest.onBeforeRequest.addListener(
-    (details) => {
-        //console.log('[test]', details.method, details.initiator, details.url);
-        //if (!SLACK_API.test(details.url) || details.method !== 'POST' || !details.requestBody?.raw?.length) return;
+    details => {
         if (!SLACK_API.test(details.url) || details.method !== 'POST') return;
+        // console.debug(`[debug] requestBody: ${JSON.stringify(details.requestBody)}`);
+        const fd = details.requestBody?.formData;
+        if (!fd) return;                                // ここでは formData 確定
 
-        if (details.method !== 'POST' || !details.requestBody) return;
+        // ── chat.postMessage ────────────────────────
+        if (details.url.includes('/api/chat.postMessage')) {
+            const ts = fd.ts?.[0] ?? '';
+            const channel = fd.channel?.[0] ?? '';
+            const text = fd.text?.[0] ?? extractTextFromBlocks(fd.blocks?.[0] ?? '');
 
-        // 文字列化例（formData 優先, なければ raw をテキストで）
-        let bodyText = '';
-        if (details.requestBody.formData) {
-            const bodyText = new URLSearchParams(
-                Object.entries(details.requestBody.formData ?? {})
-                    .flatMap(([k, vs]) => vs.map((v) => [k, v] as [string, string]))
-            ).toString();
-        } else if (details.requestBody.raw?.length) {
-            const decoder = new TextDecoder();
-            bodyText = decoder.decode(details.requestBody.raw[0].bytes);
+            const payload: SlackPostMsg = { kind: 'post', ts, channel, text };
+            log(payload);                         // ★保存
+            chrome.tabs.sendMessage(details.tabId, { action: 'LOOKUP_TS', ts, channel })
+            return;                               // ここで終わり
         }
 
-        // ここで IndexedDB 等に保存
-        console.log('[AUDIT]', details.initiator, details.url, ` body: "${JSON.stringify(details.requestBody)})"`);
+        // ── reactions.add / reactions.remove ────────
+        const ts = fd.timestamp?.[0] ?? '';
+        const channel = fd.channel?.[0] ?? '';
+        const emoji = fd.name?.[0] ?? '';
+        const type = details.url.endsWith('add') ? 'add' : 'remove';
+
+        const payload: SlackReaction = { kind: 'reaction', ts, channel, emoji, type };
+        // まずは暫定保存（user/text は空）
+        lg(payload);
+
+        // 元メッセージの user/text を取得したい → 表示中タブへ問い合わせ
+        chrome.tabs.sendMessage(details.tabId, { action: 'LOOKUP_TS', ts, channel })
     },
-    { urls: ["<all_urls>"] },
-    ["requestBody"]                         // ★これを忘れない
+    { urls: ['https://*.slack.com/api/*'] },
+    ['requestBody']
 );
+
+// content.ts からの返信を受取ってログを更新
+chrome.runtime.onMessage.addListener((msg, _sender) => {
+    if (msg.action !== 'MSG_INFO') return;
+    log(msg.info as SlackReaction);            // 上書き保存でも append でもお好みで
+});
+
+// =============== storage stub ===============
+function log(entry: SlackPostMsg | SlackReaction) {
+    console.debug('LOG', entry);               // ← ここを IndexedDB 等に
+}
 
 /* console log
 client-worker:40 [vite] connecting...
