@@ -1,17 +1,24 @@
 // slack/api.* だけを対象
 const SLACK_API = /https:\/\/[^/]+\.slack\.com\/api\/(reactions\.add|reactions\.remove|chat\.postMessage)/;
 
+// =============== 型 ===============
+interface SlackPostMsg {
+    kind: 'post';
+    ts: string;           // 1746449646.123456
+    channel: string;      // CXXXX
+    text: string;         // あああ
+}
 
-/* ---------- 型 ---------- */
-interface BaseEntry { ts: string; channelId: string; channelName?: string }
-interface PostEntry extends BaseEntry { kind: 'post'; text: string }
-interface ReactionEntry extends BaseEntry { kind: 'reaction'; emoji: string; type: 'add' | 'remove'; user?: string; text?: string }
-
-
-/* ---------- util ---------- */
-function toParams(form: { [k: string]: string[] | undefined }) { const p = new URLSearchParams(); for (const [k, vs] of Object.entries(form)) vs?.forEach(v => p.append(k, v)); return p }
-function fromBlocks(json: string) { try { return JSON.parse(json).flatMap((b: any) => b.elements?.flatMap((e: any) => e.elements?.filter((x: any) => x.type === 'text').map((x: any) => x.text))).join('') } catch { return '' } }
-
+interface SlackReaction {
+    kind: 'reaction';
+    ts: string;           // リアクション対象 msg ts
+    channel: string;
+    emoji: string;        // eyes, +1 …
+    type: 'add' | 'remove';
+    // text / user は後で content.ts から補完
+    text?: string;
+    user?: string;
+}
 
 /** blocks フィールド(JSON) から素テキストを抽出（単純化版） */
 function extractTextFromBlocks(jsonStr: string): string {
@@ -53,7 +60,7 @@ chrome.webRequest.onBeforeRequest.addListener(
 
         const payload: SlackReaction = { kind: 'reaction', ts, channel, emoji, type };
         // まずは暫定保存（user/text は空）
-        lg(payload);
+        log(payload);
 
         // 元メッセージの user/text を取得したい → 表示中タブへ問い合わせ
         chrome.tabs.sendMessage(details.tabId, { action: 'LOOKUP_TS', ts, channel })
