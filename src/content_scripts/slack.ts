@@ -1,19 +1,39 @@
-chrome.runtime.onMessage.addListener((msg, _sender, sendResp) => {
-    if (msg.action !== 'LOOKUP_TS') return;
+/** チャンネル ID → チャンネル名をサイドバーの要素から取得 */
+function channelNameFromId(id: string): string | undefined {
+    // 1) ID 属性でサクッと要素を取得
+    const el = document.getElementById(id);
+    if (el) {
+        const name = el.innerText?.trim();
+        if (name) {
+            return name;
+        }
+    }
+    return ""
+}
 
-    const { ts, channel } = msg;               // channel 未使用でも OK
-    const el =
-        document.querySelector(`[data-message-ts="${ts}"]`) ||
-        document.querySelector(`[data-item-key="${ts}"]`);
+/* ========== helper: ts → メッセージ要素 ========== */
+function findMsgElement(ts: string): HTMLElement | null {
+    return document.querySelector(`[data-item-key="${ts}"]`) ||
+        document.querySelector(`[data-message-ts="${ts}"]`);
+}
 
-    if (!el) return;                           // 見付からない場合は黙って返さない
+/* ========== listener ========== */
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+    /* ---- チャンネル名だけ欲しい ---- */
+    if (msg.action === 'GET_CHANNEL_NAME') {
+        respond({ channelName: channelNameFromId(msg.channelId) });
+        return;
+    }
 
-    const text = (el.querySelector('[data-qa="message-text"]') as HTMLElement)?.innerText ?? '';
-    const user = (el.querySelector('[data-qa^="message_sender"]') as HTMLElement)?.innerText ?? '';
-    console.debug('LOG:', `${text}, ${user}`);               // ← ここを IndexedDB 等に
-
-    chrome.runtime.sendMessage({
-        action: 'MSG_INFO',
-        info: { kind: 'reaction', ts, channel, text, user }
-    });
+    /* ---- メッセージ本文＋チャンネル名 ---- */
+    if (msg.action === 'LOOKUP_MESSAGE') {
+        const { ts, channelId } = msg;
+        const el = findMsgElement(ts);
+        const text = el ? (el.querySelector('[data-qa="message-text"]') as HTMLElement)?.innerText ?? '' : '';
+        const user = el ? (el.querySelector('[data-qa^="message_sender"]') as HTMLElement)?.innerText ?? '' : '';
+        respond({
+            channelName: channelNameFromId(channelId),
+            text, user
+        });
+    }
 });
