@@ -22,9 +22,7 @@ const defaultManifest: ManifestV3Export = {
     },
   ],
 
-  action: {
-    default_popup: "index.html",
-  },
+  // action: { default_popup: "index.html" },
   side_panel: {
     default_path: "index.html",
   },

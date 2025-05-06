@@ -31,6 +31,11 @@ function fromBlocks(json: string) {
     }
 }
 
+// 拡張機能を実行した際、サイドパネルを開く
+chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error) => console.error(error))
+
 /** Open (or create) IndexedDB for logs */
 function openDB(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
