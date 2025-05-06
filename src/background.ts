@@ -2,26 +2,95 @@
 const SLACK_API = /https:\/\/[^/]+\.slack\.com\/api\/(reactions\.add|reactions\.remove|chat\.postMessage)/;
 
 /* ---------- 型 ---------- */
-interface BaseEntry { ts: string; channelId: string; channelName?: string }
-interface PostEntry extends BaseEntry { kind: 'post'; text: string }
-interface ReactionEntry extends BaseEntry { kind: 'reaction'; emoji: string; type: 'add' | 'remove'; user?: string; text?: string }
+interface BaseEntry { loggedAt?: string; }
+interface SlackBaseEntry extends BaseEntry { app: 'slack'; ts: string; channelId: string; channelName?: string; }
+interface SlackPostEntry extends SlackBaseEntry { kind: 'post'; text: string }
+interface SlackReactionEntry extends SlackBaseEntry {
+    kind: 'reaction';
+    emoji: string;
+    type: 'add' | 'remove';
+    user?: string;
+    text?: string;
+}
 
 /* ---------- util ---------- */
-function toParams(form: { [k: string]: string[] | undefined }) { const p = new URLSearchParams(); for (const [k, vs] of Object.entries(form)) vs?.forEach(v => p.append(k, v)); return p }
-function fromBlocks(json: string) { try { return JSON.parse(json).flatMap((b: any) => b.elements?.flatMap((e: any) => e.elements?.filter((x: any) => x.type === 'text').map((x: any) => x.text))).join('') } catch { return '' } }
-
-
-/** blocks フィールド(JSON) から素テキストを抽出（単純化版） */
-function extractTextFromBlocks(jsonStr: string): string {
+function fromBlocks(json: string) {
     try {
-        const blocks = JSON.parse(jsonStr) as any[];
-        return blocks.flatMap(b =>
-            b.elements?.flatMap((e: any) =>
-                e.elements?.filter((x: any) => x.type === 'text').map((x: any) => x.text)
+        const blocks = JSON.parse(json) as any[];
+        return blocks
+            .flatMap((b) =>
+                b.elements?.flatMap((e: any) =>
+                    e.elements
+                        ?.filter((x: any) => x.type === 'text')
+                        .map((x: any) => x.text)
+                )
             )
-        ).join('');
-    } catch { return ''; }
+            .join('');
+    } catch {
+        return '';
+    }
 }
+
+/** Open (or create) IndexedDB for logs */
+function openDB(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('browser-logs', 1);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains('logs')) {
+                db.createObjectStore('logs', { keyPath: 'id', autoIncrement: true });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+/** Save a log entry into IndexedDB */
+async function saveLog(entry: SlackPostEntry | SlackReactionEntry) {
+    try {
+        const db = await openDB();
+        const tx = db.transaction('logs', 'readwrite');
+        const store = tx.objectStore('logs');
+        const toSave = { ...entry, loggedAt: entry.loggedAt ?? new Date().toISOString() };
+        store.add(toSave);
+        tx.oncomplete = () => {
+            console.debug('Log saved:', toSave);
+            // Notify sidebar UI of new log
+            chrome.runtime.sendMessage({ action: 'LOG_SAVED', entry: toSave });
+            db.close();
+        };
+        tx.onerror = () => {
+            console.error('Transaction error:', tx.error);
+            db.close();
+        };
+    } catch (err) {
+        console.error('Failed to save log:', err);
+    }
+}
+
+/** Load all log entries from IndexedDB */
+async function loadLogs(): Promise<(SlackPostEntry | SlackReactionEntry)[]> {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+        const tx = db.transaction('logs', 'readonly');
+        const store = tx.objectStore('logs');
+        const req = store.getAll();
+        req.onsuccess = () => { res(req.result as any); db.close(); };
+        req.onerror = () => { rej(req.error); db.close(); };
+    });
+}
+
+// Handle GET_LOGS request from content_script
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'GET_LOGS') {
+        loadLogs().then(logs => sendResponse({ logs })).catch(() => sendResponse({ logs: [] }));
+        return true; // keep channel open for async response
+    }
+});
+
+
+
 
 /* ---------- main listener ---------- */
 chrome.webRequest.onBeforeRequest.addListener(
@@ -31,49 +100,52 @@ chrome.webRequest.onBeforeRequest.addListener(
 
         /* ========== 投稿 ========== */
         if (details.url.includes('/api/chat.postMessage')) {
-            const entry: PostEntry = {
-                kind: 'post',
+            const entry: SlackPostEntry = {
+                app: 'slack', kind: 'post',
                 ts: fd.ts?.[0] ?? '',
                 channelId: fd.channel?.[0] ?? '',
                 text: fd.text?.[0] ?? fromBlocks(fd.blocks?.[0] ?? '')
             };
-            // チャンネル名をページに問い合わせ
             chrome.tabs.sendMessage(details.tabId, { action: 'GET_CHANNEL_NAME', channelId: entry.channelId }, res => {
-                if (res?.channelName) entry.channelName = res.channelName;
-                log(entry);
+                if (res?.channelName) {
+                    entry.channelName = res.channelName;
+                }
+                saveLog(entry);
             });
             return;
         }
 
         /* ========== リアクション ========== */
-        const entry: ReactionEntry = {
-            kind: 'reaction',
-            ts: fd.timestamp?.[0] ?? '',
-            channelId: fd.channel?.[0] ?? '',
-            emoji: fd.name?.[0] ?? '',
-            type: details.url.endsWith('add') ? 'add' : 'remove'
-        };
-        // 一旦保存（チャンネル名/本文は空）
-        // log(entry);
-
-        // ①チャンネル名 ②元メッセージ本文＋送信者 を取得
-        chrome.tabs.sendMessage(
-            details.tabId,
-            { action: 'LOOKUP_MESSAGE', ts: entry.ts, channelId: entry.channelId },
-            res => {
-                if (!res) return;
-                entry.channelName = res.channelName;
-                entry.text = res.text;
-                entry.user = res.user;
-                log(entry);         // 上書き or 再保存
-            });
+        if (details.url.includes('/api/reactions')) {
+            const entry: SlackReactionEntry = {
+                app: 'slack', kind: 'reaction',
+                ts: fd.timestamp?.[0] ?? '',
+                channelId: fd.channel?.[0] ?? '',
+                emoji: fd.name?.[0] ?? '',
+                type: details.url.endsWith('add') ? 'add' : 'remove'
+            };
+            chrome.tabs.sendMessage(
+                details.tabId,
+                { action: 'LOOKUP_MESSAGE', ts: entry.ts, channelId: entry.channelId },
+                res => {
+                    if (!res) {
+                        console.error(`No response received for message lookup. entry: ${JSON.stringify(entry)}`);
+                        return;
+                    }
+                    entry.channelName = res.channelName;
+                    entry.text = res.text;
+                    entry.user = res.user;
+                    //console.debug('[Deubg] log:', entry);
+                    saveLog(entry);
+                });
+        }
     },
     { urls: ['https://*.slack.com/api/*'] },
     ['requestBody']
 );
 
 /* ---------- storage stub ---------- */
-function log(e: PostEntry | ReactionEntry) { console.debug('LOG', e) }
+function log(e: SlackPostEntry | SlackReactionEntry) { console.debug('LOG', e) }
 
 /* console log
 client-worker:40 [vite] connecting...
