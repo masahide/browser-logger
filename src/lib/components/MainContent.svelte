@@ -55,16 +55,14 @@
           </div>
           {#if log.kind === "post"}
             <div class="font-medium">
-              <span class="text-blue-600">[# {log.channelName}]</span>
+              <span class="text-blue-600">[#{log.channelName}]</span>
               Post: {log.text}
             </div>
           {:else}
             <div class="font-medium">
-              <span class="text-green-600">[# {log.channelName}]</span>
+              <span class="text-green-600">[#{log.channelName}] {log.user}:</span>
               Reaction ({log.type} :{log.emoji})
-              {#if log.text}
-                : {log.text}
-              {/if}
+              <span class="text-gray-400">{log.text} </span>
             </div>
           {/if}
         </li>

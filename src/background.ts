@@ -3,14 +3,19 @@ const SLACK_API = /https:\/\/[^/]+\.slack\.com\/api\/(reactions\.add|reactions\.
 
 /* ---------- 型 ---------- */
 interface BaseEntry { loggedAt?: string; }
-interface SlackBaseEntry extends BaseEntry { app: 'slack'; ts: string; channelId: string; channelName?: string; }
+interface SlackBaseEntry extends BaseEntry {
+    app: 'slack';
+    ts: string;
+    channelId: string;
+    channelName: string;
+}
 interface SlackPostEntry extends SlackBaseEntry { kind: 'post'; text: string }
 interface SlackReactionEntry extends SlackBaseEntry {
     kind: 'reaction';
-    emoji: string;
     type: 'add' | 'remove';
-    user?: string;
-    text?: string;
+    emoji: string;
+    user: string;
+    text: string;
 }
 
 /* ---------- util ---------- */
@@ -109,6 +114,7 @@ chrome.webRequest.onBeforeRequest.addListener(
                 app: 'slack', kind: 'post',
                 ts: fd.ts?.[0] ?? '',
                 channelId: fd.channel?.[0] ?? '',
+                channelName: '',
                 text: fd.text?.[0] ?? fromBlocks(fd.blocks?.[0] ?? '')
             };
             chrome.tabs.sendMessage(details.tabId, { action: 'GET_CHANNEL_NAME', channelId: entry.channelId }, res => {
@@ -126,7 +132,10 @@ chrome.webRequest.onBeforeRequest.addListener(
                 app: 'slack', kind: 'reaction',
                 ts: fd.timestamp?.[0] ?? '',
                 channelId: fd.channel?.[0] ?? '',
+                channelName: '',
                 emoji: fd.name?.[0] ?? '',
+                text: '',
+                user: '',
                 type: details.url.endsWith('add') ? 'add' : 'remove'
             };
             chrome.tabs.sendMessage(
