@@ -80,13 +80,44 @@ async function saveLog(entry: SlackPostEntry | SlackReactionEntry) {
 }
 
 /** Load all log entries from IndexedDB */
-async function loadLogs(): Promise<(SlackPostEntry | SlackReactionEntry)[]> {
+async function loadLogs(days?: number): Promise<(SlackPostEntry | SlackReactionEntry)[]> {
     const db = await openDB();
     return new Promise((res, rej) => {
         const tx = db.transaction('logs', 'readonly');
         const store = tx.objectStore('logs');
         const req = store.getAll();
-        req.onsuccess = () => { res(req.result as any); db.close(); };
+        req.onsuccess = () => {
+            const allLogs = req.result as (SlackPostEntry | SlackReactionEntry)[];
+            
+            const today = new Date();
+            const startDate = new Date(today);
+            const endDate = new Date(today);
+
+            // Default to current day if days is undefined, null, or 0
+            if (days === undefined || days === null || days === 0) {
+                startDate.setHours(0, 0, 0, 0); // Start of today
+            } else if (days > 0) {
+                startDate.setDate(today.getDate() - days);
+                startDate.setHours(0, 0, 0, 0); // Start of `days` ago
+            } else { 
+                // If days is negative, unexpected based on requirements, return all logs as a safe fallback.
+                // Or, one could choose to return empty array or throw an error.
+                // For now, returning all logs seems like a reasonable default.
+                res(allLogs);
+                db.close();
+                return;
+            }
+
+            endDate.setHours(23, 59, 59, 999); // End of today
+
+            const filteredLogs = allLogs.filter(log => {
+                if (!log.loggedAt) return false;
+                const logDate = new Date(log.loggedAt);
+                return logDate >= startDate && logDate <= endDate;
+            });
+            res(filteredLogs);
+            db.close();
+        };
         req.onerror = () => { rej(req.error); db.close(); };
     });
 }
@@ -94,7 +125,8 @@ async function loadLogs(): Promise<(SlackPostEntry | SlackReactionEntry)[]> {
 // Handle GET_LOGS request from content_script
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'GET_LOGS') {
-        loadLogs().then(logs => sendResponse({ logs })).catch(() => sendResponse({ logs: [] }));
+        // Ensure msg.days is passed to loadLogs. If it's undefined, loadLogs will handle it.
+        loadLogs(msg.days).then(logs => sendResponse({ logs })).catch(() => sendResponse({ logs: [] }));
         return true; // keep channel open for async response
     }
 });
